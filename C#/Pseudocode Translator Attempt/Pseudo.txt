@@ -1,0 +1,10 @@
+for i = 0 to 9
+	print("Hello World")
+	next i
+
+while answer != password
+	answer = input("What a bastard")
+	if answer != "password"
+		print("wrong")
+	endif
+endwhile
