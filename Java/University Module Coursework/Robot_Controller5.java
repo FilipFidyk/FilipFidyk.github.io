@@ -17,7 +17,7 @@ removed from the robots memory
 import java.util.ArrayList;
 import uk.ac.warwick.dcs.maze.logic.IRobot;
 
-public class Ex2{
+public class Robot_Controller5{
 
     private int pollRun = 0;        // Incremented after each pass
     private RobotData robotData;    // Data store for junctions

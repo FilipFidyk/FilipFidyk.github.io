@@ -21,8 +21,7 @@ This one is to use randomness but avoid colliding into walls
 
 import uk.ac.warwick.dcs.maze.logic.IRobot;
 
-public class Ex1
-{
+public class Robot_Controller1{
 
 	public void controlRobot(IRobot robot) {
 

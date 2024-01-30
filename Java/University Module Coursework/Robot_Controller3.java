@@ -20,7 +20,7 @@ The robot reaches the target coordinate and from there it can only move away by 
 
 import uk.ac.warwick.dcs.maze.logic.IRobot;
 
-public class Ex3 {
+public class Robot_Controller {
      //A function to figure out whether our robot is north, south or at the latitude of the target
      private int isTargetNorth(IRobot robot){
           if (robot.getLocation().y == robot.getTargetLocation().y)

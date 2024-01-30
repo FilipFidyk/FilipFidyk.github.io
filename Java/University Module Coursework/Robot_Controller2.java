@@ -15,8 +15,7 @@ This is done via the random function and if the output is less than 0.125 then t
 
 import uk.ac.warwick.dcs.maze.logic.IRobot;
 
-public class Ex2
-{
+public class Robot_Controller2{
 
 	public void controlRobot(IRobot robot) {
 
