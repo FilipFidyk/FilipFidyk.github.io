@@ -1,0 +1,30 @@
+Certain functions like glUniform have multiple variants depending on
+what inputs you want to pass. This is displayed by a postfix. Options
+include:
+    i - int
+    f - float
+    ui - unsigned int
+    3f - 3 floats 
+    fv - float in an array/vector
+
+
+For glTexParmateri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, _____) repeat options
+include:
+    GL_REPEAT
+    GL_MIRRORED_REPEAT
+    GL_CLAMP_TO_EDGE
+    GL_CLAMP_TO_BORDER
+    
+    CLAMP_TO_BORDER allows to pick a colour of the border
+    float borderColor[] = {1.0f, 1.0f, 0.0f, 1.0f};
+    glTexParamterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+
+
+For glTexParmateri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, _____) mipmap
+options include:
+    GL_NEAREST_MIPMAP_NEAREST - Selects a texel and mipmap level
+    GL_LINEAR_MIPMAP_NEAREST - Blends nearest texels, selects mipmap level
+    GL_NEAREST_MIPMAP_LINEAR - Selects a texel, blends mipmap level
+    GL_LINEAR_MIPMAP_LINEAR - Blends texels and mipmap levels
+
+    
