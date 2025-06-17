@@ -1,0 +1,916 @@
+/* assignment.jj
+* This is the coursework for cs259 and the aim of this comment is to give an overview of the working of this 
+* implementation of a TPTP parser and interpreter through javacc
+*
+* Firstly the parser, the tokens and initial production rule "Start" can be found from line 420 and onwards. The tokens
+* are the bare basics for the all the keywords, punctuation and identifiers with the addition that whitespaces aren't 
+* skipped they're handled manually to ensure non-punctuation tokens require a whitespaces.
+*
+* The production rules parse the whole text file and do some basics check: correct syntax, no repeating step names,
+* different parameter names, step names can't be parameter names, identifiers in e1,e2,e3,e4 are either id1 or id2
+* and that the initial step exists. 
+*
+* When steps are parsed, the parser creates custom "Step" class objects that store the key elements, everything except
+* for punctuation and keywords. This way the steps are stored for use. A notable implementation detail is that 
+* expressions (i.e. e1,e2,e3,e4 and the condition) are stored as string based abstract syntax trees (AST). The idea started
+* from parse trees in lectures and developed using https://ruslanspivak.com/lsbasi-part7/. Each component of the
+* expression is isolated in its own node and an AST method evaluates the tree whilst replacing id1 and id2, if they're
+* present. Also, the way expression are parsed was very heavily influenced by the calculator example in the provided
+* javacc tutorial.
+*
+* The way expressions are parsed are turned into ASTs has a slight conflict with positive linearity as negated terms
+* (i.e. -x, -(5+3) and so on) are stored as "-1 * term". This means that no multiplication is violated even though no
+* multiplication is in the initial expression. This liberty was taken as otherwise the "-" operator would have two
+* functions in the AST and the increased complexity was too great to implement without unexpected behaviour.
+*
+* The interpreter part of the coursework takes place in the "run()" command, which constantly applies "applyRule()",
+* initially to the input coordinates and then to the output of the previous "applyRule()" result. When an expression
+* isn't available it is stored as null and just the previous output is not changed. A history of steps with coordinates
+* is stored to identify the occurences of loops. This only runs if the parsing succeeds and no non-simple steps are 
+* identified.
+*
+* Very briefly the identification of non-simple rules is split into two parts. "pLinearCheck()", which is called when an
+* expression has been parsed, and "simplicityCheck()" which is called after each rules has finished parsing. The
+* first non-simple step identifier is stored globally to be output when parsing finishes successfully.
+*
+* To conclude the overview, this solution uses global variables and data structures quite liberally. Although, not the 
+* best programming practise it reduces the complexity of all parts of the program as information that needs to be 
+* remembered throughout most, if not all, of the runtime is easily available. 
+*
+* Extra challenge has not been attempted.
+*/
+PARSER_BEGIN(TPTP)
+    import java.util.Set;
+    import java.util.HashSet;
+    import java.util.Map;
+    import java.util.HashMap;
+    import java.util.ArrayList;
+    import java.lang.StringBuilder;
+
+    public class TPTP {
+        //Global storage of step identifiers, parameter identifier and step objects
+        static private Set<String> steps = new HashSet<>();
+        static private Set<String> params = new HashSet<>();
+        static private Map<String, Step> steps2 = new HashMap<>();
+        
+        //step history, non-simple step flag and variables during interpretation that store the current step
+        //and coordinate values
+        static private ArrayList<String> stepHistory = new ArrayList<>();
+        static private String firstNonSimple = null;
+        static private String currStep;
+        static private String currId1;
+        static private String currId2;
+
+
+        public static void main( String[] args ){
+            TPTP parser = new TPTP( System.in ) ;
+            try{
+                String val = parser.Start() ; 
+                System.out.println(val);
+                if (!(firstNonSimple == null)){
+                    System.out.println("Non-Simple");
+                    System.out.println(firstNonSimple);
+                    return;
+                }
+                System.out.println("Simple");
+                run();
+                System.out.println(currStep + " " + currId1 + " " + currId2);
+            } catch (ParseException e){
+                System.err.println(e.getMessage());
+                System.out.println("FAIL");
+            } catch (TokenMgrError e){
+                System.err.println(e.getMessage());
+                System.out.println("FAIL");
+            } catch (Exception e){
+                System.err.println(e.getMessage());
+                System.out.println("FAIL");
+            }
+        }
+
+        /*
+        * Single step application, if the rule contains expressions then new coordinate values are evaluated and stored
+        * else they stay the same from the previous step
+        *
+        * Also the new rule is stored  
+        */
+        private static void applyRule() throws Exception, NumberFormatException{
+            Step s = steps2.get(currStep);
+            String temp1, temp2;
+
+            if(s.getCond().evalB(s.getId1(), s.getId2(), currId1, currId2)){
+                if (!(s.getE1() == null)){
+                    temp1 = String.valueOf(s.getE1().evalExpr(s.getId1(), s.getId2(), currId1, currId2));
+                    temp2 = String.valueOf(s.getE2().evalExpr(s.getId1(), s.getId2(), currId1, currId2));
+                    currId1 = temp1;
+                    currId2 = temp2;
+                }
+                currStep = s.getCondTrueStep();
+            }
+            else {
+                if (!(s.getE3() == null)){
+                    temp1 = String.valueOf(s.getE3().evalExpr(s.getId1(), s.getId2(), currId1, currId2));
+                    temp2 = String.valueOf(s.getE4().evalExpr(s.getId1(), s.getId2(), currId1, currId2));
+                    currId1 = temp1;
+                    currId2 = temp2;
+                }
+                currStep = s.getCondFalseStep();
+            }
+        }
+
+        /*
+        * Iterates through the step history to check if a triple (step name, id1, id2) has already occured
+        * if so that means that a loop exists and the program flow has entered it
+        */
+        private static boolean checkForLoop(){
+            for (int i = 0; i < stepHistory.size(); i+=3){
+                if (stepHistory.get(i).equals(currStep) &&
+                    stepHistory.get(i+1).equals(currId1) &&
+                    stepHistory.get(i+2).equals(currId2)){
+                        currStep = "loop";
+                        currId1 = "";
+                        currId2 = "";
+                        return true;
+                    }
+            }
+            return false;
+        }
+
+        /*
+        * The function that is used to start interpreting the text file. Stores all (step name, id1, id2) triples
+        * for loop checking and keeps applying rules until program starts looping or halts due to an undefined step
+        */ 
+        private static void run() throws Exception, NumberFormatException{
+            while(true){
+                if (steps.contains(currStep)){
+                    stepHistory.add(currStep);
+                    stepHistory.add(currId1);
+                    stepHistory.add(currId2);
+                    applyRule();
+                    if (checkForLoop()){
+                        return;
+                    }
+                }
+                else{
+                    return;
+                }
+            }
+        }
+    }
+
+    /*
+    * The step class that stores the key components of the defined steps
+    *   - Parameter variables
+    *   - The condition as an AST
+    *   - All expressions that have been input as ASTs, they may be null if they were omitted
+    *   - The step names of further instructions
+    *
+    * The name of the step isn't stored here it is in the "steps2" map where the step name is used as a key
+    *
+    * Contains getters and setters for all attributes to be used during parsing for checks and creating the object fully.
+    * Also a simplicityCheck that checks if the step input is simple
+    */
+    class Step {
+        private String id1;
+        private String id2;
+        private AST cond;
+        private AST e1;
+        private AST e2;
+        private String condTrueStep;
+        private AST e3;
+        private AST e4;
+        private String condFalseStep;
+
+        // Constructor with all fields
+        Step() {
+            this.id1 = null;
+            this.id2 = null;
+            this.cond = null;
+            this.e1 = null;
+            this.e2 = null;
+            this.condTrueStep = null;
+            this.e3 = null;
+            this.e4 = null;
+            this.condFalseStep = null;
+        }
+
+        public String getId1(){return this.id1;}
+        public String getId2(){return this.id2;}
+        public AST getCond(){return this.cond;}
+        public AST getE1(){return this.e1;}
+        public AST getE2(){return this.e2;}
+        public String getCondTrueStep(){return this.condTrueStep;}
+        public AST getE3(){return this.e3;}
+        public AST getE4(){return this.e4;}
+        public String getCondFalseStep(){return this.condFalseStep;}
+
+        public void setId1(String x){this.id1 = x;}
+        public void setId2(String x){this.id2 = x;}
+        public void setCond(AST x){this.cond = x;}
+        public void setE1(AST x){this.e1 = x;}
+        public void setE2(AST x){this.e2 = x;}
+        public void setCondTrueStep(String x){this.condTrueStep = x;}
+        public void setE3(AST x){this.e3 = x;}
+        public void setE4(AST x){this.e4 = x;}
+        public void setCondFalseStep(String x){this.condFalseStep = x;} 
+
+        /*
+        * Verifies all components of simplicity are present and if they are then true is output
+        *   - s1 - e1,e2,e3,e4 are positively linear (no multiplication and no subtraction of non-numerals ) 
+        *   - s2 - e1 and e2 contain no subtraction "-"
+        *   - s3 - if cond fails and id1 and id2 are non-negative then evaluated e3 and e4 are non-negative
+        *
+        * Lazy application of s3 for efficiency as it requires an expression to be evaluated. If the condition uses 
+        * large numbers and the expressions contain multiplication there is chance for integer overflow errors. Because  
+        * of that it isn't checked if s1 or s2 fail.
+        *
+        * S3 implementation details are explained abouve "s3Check()"
+        */
+        public boolean simplicityCheck() throws Exception{
+            boolean s1, s1e1,s1e2,s1e3,s1e4;
+            s1e1 = (this.e1 == null) ? true : this.e1.getPLinear();
+            s1e2 = (this.e2 == null) ? true : this.e2.getPLinear();
+            s1e3= (this.e3 == null) ? true : this.e3.getPLinear();
+            s1e4 = (this.e4 == null) ? true : this.e4.getPLinear();
+            s1 = s1e1 && s1e2 && s1e3 && s1e4;
+            
+            
+            boolean s2e1, s2e2, s2;
+            s2e1 = (this.e1 == null) ? true : this.e1.s2Check();
+            s2e2 = (this.e2 == null) ? true : this.e2.s2Check();
+            s2 = s2e1 && s2e2;
+            
+            if (s1 == true && s2 == true){
+                boolean s3 = this.s3Check();
+                return s1 && s2 && s3; 
+            }
+            
+            return s1 && s2;
+        }
+
+        /*
+        * To test s3, s1 and s2 have to succeed. This means that e3 and e4 have no multiplication and subtraction of 
+        * non-numerals. THis boils e3 and e4 to non-negated id1 or/and id2 plus or minus some numerals. Therefore,
+        * to check if s3 is violated we need to check if this expression is negative when ID1 and ID2 take up the minimal
+        * terms
+        *   - Which are the value in the condition and zero, ensure they applied correctly to ID1 and ID2
+        *
+        * Before this understanding was finalised, more tests were expected and thus "exprS3Tests()" was created, then
+        * tests were removed but refactoring this was unnecessary 
+        *   - "exprS3Tests()" essentially evaluates e3 and e4 with the values of id1 and id2 replaced correctly
+        */
+        private boolean s3Check() throws Exception {
+            if (this.cond == null){
+                throw new Exception("Condition isn't instantiated");
+            }
+
+            if (!this.cond.getRoot().getVal().equals("<")){
+                throw new Exception("Condition doesn't use '<'");
+            }
+
+            if (this.e3 == null && this.e4 == null){
+                return true;
+            }
+
+            String condValue = this.cond.getRoot().getRight().getVal();
+            String condVar = this.cond.getRoot().getLeft().getVal();
+
+            return exprS3Tests(this.e3, condVar, condValue) && exprS3Tests(this.e4, condVar, condValue);            
+        }
+
+        /*
+        *  refer to "s3Check() comment"
+        */
+        private boolean exprS3Tests(AST tree, String condVar, String condVal) throws Exception{
+            if (tree.getRoot() == null){
+                throw new Exception("Instantiated AST but empty expression");
+            }
+
+            if (condVar.equals(this.id1)){
+                if (tree.evalExpr(this.id1, this.id2, condVal, "0")<0) {return false;}
+                return true;
+            }
+            else if(condVar.equals(this.id2)){
+                if (tree.evalExpr(this.id1, this.id2, "0", condVal)<0) {return false;}
+                return true;
+            }
+            else{
+                throw new Exception("condition variable doesn't match id1 or id2");
+            }
+            
+        }
+
+        /*
+        *   output of the step object for testing purposes
+        */
+        public String toString(){
+            StringBuilder sb = new StringBuilder();
+
+            sb.append("(");
+            sb.append(this.id1);
+            sb.append(",");
+            sb.append(this.id2);
+            sb.append(") | ");
+            sb.append(this.cond.toString());
+            sb.append(" | ");
+            sb.append(this.e1.toString());
+            sb.append(" | ");
+            sb.append(this.e2.toString());
+            sb.append(" | ");
+            sb.append(this.condTrueStep);
+            sb.append(" | ");
+            sb.append(this.e3.toString());
+            sb.append(" | ");
+            sb.append(this.e4.toString());
+            sb.append(" | ");
+            sb.append(this.condFalseStep);
+            sb.append(" | ");
+
+            return sb.toString();
+        }
+    }
+
+    /*
+    *   The node class used to facilitate AST. Very basic implementation of a 2-child node with a toString() method
+    */
+    class Node {
+        private String val;
+        private Node left;
+        private Node right;
+
+        // Constructor with value parameter
+        Node(String val, Node inLeft, Node inRight) {
+            this.val = val;
+            this.left = inLeft;
+            this.right = inRight;
+        }
+        Node(String val) {
+            this.val = val;
+            this.left = null;
+            this.right = null;
+        }
+        // Constructor without parameters (sets value to null)
+        Node() {
+            this.val = null;
+            this.left = null;
+            this.right = null;
+        }
+        public String getVal() { return val; }
+        public Node getLeft() { return left; }
+        public Node getRight() { return right; }
+        
+        public void setVal(String val) { this.val = val; }
+        public void setLeft(Node left) { this.left = left; }
+        public void setRight(Node right) { this.right = right; }
+
+        public String toString() {
+            // Base case for null node
+            if (this == null) return "";
+
+            StringBuilder sb = new StringBuilder();
+            sb.append(this.val);
+
+            // If there are children, add them to the string representation
+            if (this.left != null || this.right != null) {
+                sb.append("(");
+                if (this.left != null) {
+                    sb.append(this.left.toString()); // Left child
+                    sb.append(", ");
+                }
+                if (this.right != null) {
+                    sb.append(this.right.toString()); // Right child
+                }
+                sb.append(")");
+            }
+
+            return sb.toString();
+        }
+    }
+
+    /*
+    * The abstract syntax tree used for expression handling and evaluating. Leaves the tree structure handling to node
+    * and only stores the root node. Because of this a lot of the methods require public and private versions, the
+    * public one calls the private one with the root node to recursively traverse and operate on the tree.
+    *
+    * Also contains positive linearity infrastructure to identify it and store it
+    */
+    class AST {
+        private Node root;
+        private boolean plinear;
+
+        AST(){
+            root = null;
+        }
+        public Node getRoot() { return this.root; }
+        public void setRoot(Node n) { this.root = n ; }
+        public boolean getPLinear() { return this.plinear;}
+
+        /*
+        * the functions used to evaluate the ast with variables replaced, if they exist. Regular post-order traversal
+        * with base case for when no children nodes are present. they include
+        *   - a numeral
+        *   - EIther id1 or id2 to replaced by the passed in value, val1 or val2 respectively
+        * Everything is in strings initially but is converted to integer before being returned so it is ready for 
+        * an arithmetic operation
+        */
+        public int evalExpr(String id1, String id2, String val1, String val2) throws Exception, NumberFormatException{
+            return this.evalExprInner(this.root, id1, id2, val1, val2);
+        }
+
+        private int evalExprInner(Node n, String id1, String id2, String val1, String val2) throws Exception, NumberFormatException{
+            if (n.getLeft() == null && n.getRight() == null){
+                if (n.getVal().equals(id1)){
+                    return Integer.parseInt(val1);
+                }
+                else if (n.getVal().equals(id2)){
+                    return Integer.parseInt(val2);
+                }
+                else {
+                    return Integer.parseInt(n.getVal());
+                }
+            }
+
+            int leftTerm = this.evalExprInner(n.getLeft(), id1, id2, val1, val2);
+            int rightTerm = this.evalExprInner(n.getRight(), id1, id2, val1, val2);
+
+            switch(n.getVal()){
+                case "*":
+                    return leftTerm * rightTerm;
+                case "+":
+                    return leftTerm + rightTerm;
+                case "-":
+                    return leftTerm - rightTerm;
+                default:
+                    throw new Exception("Incorrect character being used as operator");
+            }
+        }
+
+        /*
+        * Positive linerity check, should be called after and expression (e1,e2,e3,e4) is finished being parsed into the
+        * AST to set the pLinear attribute. Very simple recursive traversal to find "*" or "-" with a non-numeral in the
+        * right child node. Has to be a numeral and it can't be a subexpression.
+        */
+        public void pLinearCheck() throws Exception{
+            if (this.root == null){
+                throw new Exception("AST tree isn't instantiated, can't establish positive linearity or lack thereof");
+            }
+
+            this.plinear = pLinearInner(this.root);
+        }
+
+        private boolean pLinearInner(Node n){
+            if (n == null){
+                return true;
+            }
+            else if (n.getVal().equals("*")){
+                return false;
+            }
+            else if (n.getVal().equals("-")){
+                try{
+                    Integer.parseInt(n.getRight().getVal());                            //Want to parse a number, if fail then return false
+                } catch (NumberFormatException e){
+                    return false;
+                }
+            }
+
+            return pLinearInner(n.getLeft()) && pLinearInner(n.getRight());
+        }
+
+        /*
+        * A method necessary to check for the s2 condition in simplicity. a traversal any occurence of "-" on its own
+        * as an operator
+        */
+        public boolean s2Check() throws Exception{
+            if (this.root == null){
+                throw new Exception("Instantiated AST but empty expression");
+            }
+
+            return s2CheckInner(this.root);
+        }
+
+        private boolean s2CheckInner(Node n) throws Exception{
+            if (n == null){
+                return true;
+            }
+            if (n.getVal().equals("-")){
+                return false;
+            }
+
+            return s2CheckInner(n.getLeft()) && s2CheckInner(n.getRight());
+        }
+
+        /*
+        * Evaluation of the condition in a step id1 or id2 is replaced by the correct value and is evaluated if the 
+        * value is less than the number specified in the condition 
+        */
+        public boolean evalB(String id1, String id2, String val1, String val2) throws Exception, NumberFormatException{
+            if (this.root == null || this.root.getLeft() == null || this.root.getRight() == null){
+                throw new Exception("Incorrectly instantiated AST");
+            }
+
+            if (this.root.getLeft().getVal().equals(id1)){
+                return Integer.parseInt(val1) < Integer.parseInt(this.root.getRight().getVal());
+            }
+            if (this.root.getLeft().getVal().equals(id2)){
+                return Integer.parseInt(val2) < Integer.parseInt(this.root.getRight().getVal());
+            }
+            return false;
+        }
+        public String toString(){
+            return this.root.toString();
+        }
+    }
+PARSER_END(TPTP)
+
+/*
+* All the tokens necessary for the parser
+*/
+SKIP:{ "\n" | "\r" | "\r\n"}
+TOKEN : { < WS : " "> }
+TOKEN : { < IF : "if" > | < ELSE : "else" > | < BECOMES : "becomes" > | < AND : "and" > | < RUN : "run" > }
+TOKEN : { < OPENP : "(" > | < CLOSEP : ")"> | < COMMA : "," > | < COLON : ":" > | < SCOLON : ";" > }
+TOKEN : { < LESSER : "<" > }
+TOKEN : { < PLUS : "+" > | < MINUS : "-" > | < TIMES : "*" >}
+
+//Identifiers must start with a letter and can be followed by an amount of letters, numbers and underscores
+TOKEN : { < IDENTIFIER : ["a"-"z", "A"-"Z"] (["a"-"z", "A"-"Z", "0"-"9", "_"])* > }
+TOKEN : { < NUMBER : (["0"-"9"])+ > }
+
+/*
+* Initial production rule, well defined steps followed by "run STEPNAME (COORD1, COORD2)"
+*   - STEPNAME must have been defined
+*   - COORD1 and COORD2 need to be numerals, by definition can't be negative numbers
+*
+* If it succeeds then "PASS" is returned to indicate successful parsing, if parsing fails, an exception or error is
+* is thrown, propagated and caught by "main()" and "FAIL" is printed
+*/
+String Start() throws Exception:
+{
+    Token t;
+}
+{
+    (<WS>)*
+    (Step() (<WS>)*)+
+
+    <RUN> (<WS>)+ 
+    t = <IDENTIFIER>
+    {
+        if (!steps.contains(t.image)){
+            throw new ParseException("Can't run a step that doesn't exist");
+        }
+        currStep = t.image;
+    }
+    (<WS>)* StepCoordInput()
+
+    <EOF>
+    {return "PASS";}
+}
+
+/*
+* Production rule designed to parse well defined steps, 4 possible structures they include:
+*   - STEP:if VAR<NUM(ID1,ID2)becomes(E1,E2)and NSTEP else(E3,E4)and ESTEP;
+*   - STEP:if VAR<NUM(ID1,ID2)NSTEP else(E3,E4) and ESTEP;
+*   - STEP:if VAR<NUM(ID1,ID2)becomes(E1,E2)and NSTEP else ESTEP;
+*   - STEP:if VAR<NUM(ID1,ID2)NSTEP else  ESTEP;
+*
+* - STEP, NSTEP and ESTEP can be any identifier except for the identifiers used in ID1, ID2 here and other productions
+* - VAR must be the same identifier as ID1 or ID2 
+* - NUM must be a numeral
+* - ID1 and ID2 must be distinct identifiers in the step, but can be the same as other ones across different steps
+* - All lower cases words and punctuation must be where it is
+* - the examples above show the minimal required spacing you can add as much spaces as you'd like
+*
+* Note: New line characters can be used but don't replace spaces, so if you enter a where space is requires and don't
+*       add that space later the step won't be parsed
+*/
+void Step() throws Exception:
+{
+    Step rule = new Step();
+    Token stepName;
+    Token condName;
+}
+{
+    stepName = <IDENTIFIER>
+    (<WS>)*
+    <COLON>
+    (<WS>)*
+    <IF>
+    (<WS>)+
+    condName = Condition(rule)
+    (<WS>)*
+    StepCoordVars(condName, rule)
+    {
+        if (params.contains(stepName.image) || steps.contains(stepName.image)){
+            throw new ParseException("Step name can't be a repetition or a parameter in this step or a different one");
+        }
+        steps.add(stepName.image);
+    }
+    (<WS>)*
+    FirstPart(rule)
+    (<WS>)+
+    (<ELSE>)
+    SecondPart(rule)    //SecondPart can start either with a bracket or id so it handles that whitespace
+    (<WS>)*
+    <SCOLON>
+    {
+        steps2.put(stepName.image, rule);
+        if (rule.simplicityCheck()){
+            return;
+        }
+
+        if (firstNonSimple == null){
+            firstNonSimple = stepName.image;
+        }
+    }
+}
+
+/*
+* USed by "Step()" to parse correctly the following sections in examples from the "Step()" comment:
+*   - becomes(E1,E2)and NSTEP 
+*   - NSTEP
+*
+* If the expressions are omitted then in the step object they stay as null
+*/
+void FirstPart(Step rule) throws Exception: 
+{
+    Token t;
+}
+{
+    (
+        <BECOMES>
+        (<WS>)*
+        StepCoordExpr(rule, 1)
+        (<WS>)*
+        <AND>
+        (<WS>)+
+        t = <IDENTIFIER>
+        {rule.setCondTrueStep(t.image);}
+    |
+        t = <IDENTIFIER>
+        {rule.setCondTrueStep(t.image);}
+    )
+}
+
+/*
+* SImilar premise as "FirstPart()" parses the following sections from the example in the "Step()" comment
+*   - (E3,E4)and ESTEP
+*   - ESTEP
+*
+* If the expressions are omitted then in the step object they stay as null
+*
+* Unlike other productions, SecondPart handles the white spaces before its first actual token. THat is because the
+* two variants mentioned start with a punctuation mark and identifier respectively. This means that the first variant
+* doesn't require a white space whilst the identifer does require a space beforehand. To solve this "LOOKAHEAD()" is
+* used 
+*/
+void SecondPart(Step rule) throws Exception: 
+{
+    Token t;
+}
+{
+    (
+        LOOKAHEAD((<WS>)*<OPENP>)
+        (<WS>)*
+        StepCoordExpr(rule, 2)
+        (<WS>)*
+        <AND>
+        (<WS>)+
+        t = <IDENTIFIER>
+        {rule.setCondFalseStep(t.image);}
+    |
+        (<WS>)+
+        t = <IDENTIFIER>
+        {rule.setCondFalseStep(t.image);}
+    )
+}
+
+/*
+* Used to parse (ID1,ID2) in step definitions. Adds ID1 and ID2 to the global parameter storage and to the step objects
+*
+* Throws exceptions if ID1 is the same as ID2 and the earlier parsed condition variable is the same as ID1 or ID2
+*/
+void StepCoordVars(Token condName, Step rule) : 
+{
+    Token x;
+    Token y;
+}
+{
+    <OPENP>
+    (<WS>)*
+    x = <IDENTIFIER>
+    {
+        params.add(x.image);
+        rule.setId1(x.image);
+    }
+    (<WS>)*
+    <COMMA>
+    (<WS>)*
+    y = <IDENTIFIER>
+    {
+        params.add(y.image);
+        rule.setId2(y.image);
+    }
+    (<WS>)*
+    {
+        if (x.image.equals(y.image)){
+            throw new ParseException("For a step the coorinates, (x,y), x and y can't share the same variable");
+        }
+
+        if (!condName.image.equals(x.image) && !condName.image.equals(y.image)){
+            throw new ParseException("The condition variable has to be one of the input variables");
+        }
+    }
+    <CLOSEP>
+}
+
+/*
+* Handles the parsing of (E1,E2) and (E3,E4) and setting into the step object
+*
+* the "num" parameter is used distinguish whether it is (E1,E2) being parsed or (E3,E4)
+*/
+void StepCoordExpr(Step rule, int num) throws Exception: 
+{
+    AST ast1 = new AST();
+    AST ast2 = new AST();
+    Node n1, n2;
+}
+{
+    <OPENP>
+    (<WS>)*
+    n1 = Expression(rule)
+    {   
+        ast1.setRoot(n1);
+        ast1.pLinearCheck();
+        if (num == 1){
+            rule.setE1(ast1);
+        }
+        else{
+            rule.setE3(ast1);
+        }
+    }
+    (<WS>)*
+    <COMMA>
+    (<WS>)*
+    n2 = Expression(rule)
+    {
+        ast2.setRoot(n2);
+        ast2.pLinearCheck();
+        if (num == 1){
+            rule.setE2(ast2);
+        }
+        else{
+            rule.setE4(ast2);
+        }
+    }
+    (<WS>)*
+    <CLOSEP>
+}
+
+/*
+* Handles the parsing of (COORD1,COORD2), where the coordinates have to be numerals
+*/
+void StepCoordInput() : 
+{
+    Token x;
+}
+{
+    <OPENP>
+    (<WS>)*
+    x = <NUMBER>
+    {currId1 = x.image;}
+    (<WS>)*
+    <COMMA>
+    (<WS>)*
+    x = <NUMBER>
+    {currId2 = x.image;}
+    (<WS>)*
+    <CLOSEP>
+}
+
+/*
+* Handles the parsing of VAR<NUM, creates an AST and sets it into the step objects
+*/
+Token Condition(Step rule) :
+{
+    Token t1;
+    Token t2;
+    AST ast = new AST();
+}
+{
+    t1 = <IDENTIFIER>
+    (<WS>)*
+    <LESSER>
+    (<WS>)*
+    t2 = <NUMBER>
+    {
+        //Uses the constructors that immediately creates a node with two non-null children nodes
+        ast.setRoot(new Node("<", new Node(t1.image), new Node(t2.image)));
+        rule.setCond(ast);
+        return t1;
+    }
+}
+
+/*
+* This comment will give an overview of how the rules "Expression()", "Term()", "Primary()" work to form 
+* complete expressions
+*
+* Starting from the basic bricks of an expression the primaries in "Primary()" are defined to be:
+*   - an identifier(ID1 or ID2)
+*   - a numeral
+*   - a subexpression is brackets, for example (3+3)
+*   - a negated version of three above
+*
+* Then the "Term()" looks for either for a primary or multiple primaries combined by multiplication. Those two
+* are defined to be terms. Multiplication is parsed first to ensure it gets evaluated before addition and subtraction.
+*
+* Finally "Expression()" runs to parse either a single term or multiple terms combined via addition or subtraction
+*   
+* In both "Term()" and "Expression()" the first element can be returned (as a leaf node)if there is no more operations.
+* If there are operations then the first element becomes the left child, the operator becomes the root node and the next
+* element is the right child. If the operations can continue then the little tree that was made, its root becomes the
+* left child of new node that has the operator as the root and the next element is the right child
+*   - Note - it works like for "Term()" only if multiple multiplications take place consecutively and for "Expression()"
+*            only if there additions or subtractions occurring consecutively. 
+*/
+Node Expression(Step rule):
+{
+    Token t;
+    Node n;
+    Node nl;
+    Node nr;}
+{
+    n = Term(rule)
+    (
+        LOOKAHEAD((<WS>)*<PLUS>)
+        (<WS>)*
+        t = <PLUS>
+        (<WS>)*
+        nr = Term(rule)
+        {
+            nl = n;
+            n = new Node(t.image, nl, nr);
+        }
+    |
+        LOOKAHEAD((<WS>)*<MINUS>)
+        (<WS>)*
+        t = <MINUS>
+        (<WS>)*
+        nr = Term(rule)
+        {
+            nl = n;
+            n = new Node(t.image, nl, nr);
+        }
+    )*
+    {return n;}
+}
+
+Node Term(Step rule):
+{
+    Token t;
+    Node n;
+    Node nl;
+    Node nr;
+}
+{
+    n = Primary(rule)
+    (
+        LOOKAHEAD((<WS>)*<TIMES>)
+        (<WS>)*
+        t = <TIMES>
+        (<WS>)*
+        nr = Primary(rule)
+        {
+            nl = n;
+            n = new Node(t.image, nl, nr);
+        }
+    )*
+    {return n;}
+}
+
+Node Primary(Step rule):
+{
+    //a token to store what is parsed, and the string value is put into a AST node
+    Token t;
+    Node n;
+}
+{
+    //if the value of the primary is a variable identifier ensure is ID1 or ID2
+    t = <IDENTIFIER>
+    {   
+        if (!t.image.equals(rule.getId1()) && !t.image.equals(rule.getId2())){
+            throw new ParseException("Variables in E1,E2,E3,E4 have to be either ID1 or ID2");
+        }
+        return new Node(t.image);
+    } 
+|
+    //put the string number into the node 
+    t = <NUMBER>
+    {return new Node(t.image);} 
+|
+    //If it is a subexpression we want this node to be a the root of a subtree
+    <OPENP> (<WS>)* n = Expression(rule) (<WS>)* <CLOSEP>
+    {return n;}
+|
+    //Negated primary, is seen as -1 * Primary to ensure "-" has only one function 
+    t = <MINUS> (<WS>)* n = Primary(rule)
+    {return new Node("*", new Node("-1"), n);}
+}
