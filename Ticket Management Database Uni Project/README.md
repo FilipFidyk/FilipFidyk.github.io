@@ -1,7 +1,7 @@
 # Github README update
 SQL project for a databases university module, 4 database alterations and 4 queries done via JDBC. All SQL written by me, unlike the Java. Functions named tasks 1 through 8 were writtne by me, whilst the rest of it was a provided skeleton. Heavy use of persistent stored modules as minimal java was required.
 
-This was the original report file, below there is an explanation of the code across schema.sql and GigSystem.java. This project was written November/December 2024 and i'm writing this update June 2025, i don not remember what the first 4 tasks were exactly.
+This was the original report file, below there is an explanation of the code across schema.sql and GigSystem.java. This project was written November/December 2024 and i'm writing this update June 2025, i do not remember what the first 4 tasks were exactly but the last 4 were just complex queries.
 # Task Implementations
 
 <!-- For each of the tasks below, please write around 100-200 words explaining how your solution works (describing the behaviour of your SQL statements/queries) -->
